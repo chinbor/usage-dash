@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "usage-dash config",
+  "description": "~/.claude/usage-dash.json: which quotas the usage-dash band shows. Keys are never written here, only the names of the environment variables that hold them.",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string" },
+    "refreshSeconds": { "type": "number", "minimum": 30, "default": 300, "description": "How often every source is read again." },
+    "warnPercent": { "type": "number", "minimum": 0, "maximum": 100, "default": 20, "description": "Remaining percent below which a window is 告急 (red); below twice this it is 偏紧 (amber)." },
+    "hideUnavailable": { "type": "boolean", "default": true, "description": "Leave out of the band a source that is not set up on this machine (no credentials, no reading yet)." },
+    "sources": {
+      "type": "array",
+      "description": "Shown in this order.",
+      "items": { "$ref": "#/$defs/source" }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string", "description": "Unique; what /usage-dash remove|enable|disable take." },
+        "type": { "enum": ["claude", "codex", "agnes-plan", "deepseek", "openai-billing", "http-json"] },
+        "label": { "type": "string" },
+        "icon": { "type": "string", "description": "One or two characters, or an emoji, for the icon tile." },
+        "color": { "type": "string", "description": "The icon tile's color, e.g. #7c5cff." },
+        "enabled": { "type": "boolean", "default": true },
+        "warnPercent": { "type": "number" },
+        "warnBalance": { "type": "number", "minimum": 0, "default": 5, "description": "deepseek: balance below which it is 告急 (red), below twice this 偏紧 (amber); 0 turns it off." },
+        "keyEnv": { "type": "string", "description": "Name of the environment variable holding the key or token." },
+        "emailEnv": { "type": "string", "description": "agnes-plan: variable holding the login email (default AGNES_EMAIL)." },
+        "passwordEnv": { "type": "string", "description": "agnes-plan: variable holding the password (default AGNES_PASSWORD)." },
+        "bin": { "type": "string", "description": "codex: the codex executable (default codex on PATH)." },
+        "baseUrl": { "type": "string", "description": "openai-billing: API base ending in /v1." },
+        "url": { "type": "string" },
+        "method": { "type": "string", "default": "GET" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "body": { "type": "string" },
+        "auth": {
+          "type": "object",
+          "required": ["env"],
+          "properties": {
+            "env": { "type": "string" },
+            "header": { "type": "string", "default": "Authorization" },
+            "prefix": { "type": "string", "default": "Bearer " }
+          }
+        },
+        "root": { "type": "string", "description": "http-json: dot path every other path is under." },
+        "windows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string" },
+              "used": { "type": "string" },
+              "limit": { "type": "string" },
+              "usedPercent": { "type": "string" },
+              "remainingPercent": { "type": "string" },
+              "resetsAt": { "type": "string", "description": "Path to epoch seconds, epoch ms or an ISO date." },
+              "resetInSeconds": { "type": "string" }
+            }
+          }
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "path"],
+            "properties": { "name": { "type": "string" }, "path": { "type": "string" }, "unit": { "type": "string" } }
+          }
+        }
+      }
+    }
+  }
+}

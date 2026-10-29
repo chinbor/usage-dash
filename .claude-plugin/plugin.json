@@ -1,0 +1,42 @@
+{
+  "name": "usage-dash",
+  "version": "0.3.5",
+  "description": "输入框上方的 AI 订阅额度仪表盘：Claude / Codex / Agnes / DeepSeek / 任意 JSON 接口，数据源可配置增删",
+  "author": {
+    "name": "chinbor",
+    "url": "https://github.com/chinbor"
+  },
+  "homepage": "https://github.com/chinbor/usage-dash",
+  "repository": "https://github.com/chinbor/usage-dash",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "display": {
+      "type": "string",
+      "title": "显示位置",
+      "description": "band = 输入框上方横条（与其他横条叠放，不抢位置）；status = 状态栏一行；off = 不显示，只用 /usage-dash 查看",
+      "options": [
+        "band",
+        "status",
+        "off"
+      ],
+      "default": "band"
+    },
+    "configPath": {
+      "type": "string",
+      "title": "配置文件路径",
+      "description": "留空则用 ~/.claude/usage-dash.json（首次运行自动生成）",
+      "default": ""
+    }
+  },
+  "keywords": [
+    "usage",
+    "quota",
+    "rate-limit",
+    "dashboard",
+    "codex",
+    "claude",
+    "deepseek",
+    "agnes"
+  ]
+}

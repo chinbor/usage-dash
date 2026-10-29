@@ -1,0 +1,12 @@
+{
+  "name": "usage-dash",
+  "owner": { "name": "chinbor" },
+  "metadata": { "description": "usage-dash: an AI subscription usage band above the Claude Code prompt" },
+  "plugins": [
+    {
+      "name": "usage-dash",
+      "source": "./",
+      "description": "AI subscription usage band above the Claude Code prompt: Claude, Codex, Agnes, DeepSeek or any JSON endpoint"
+    }
+  ]
+}
