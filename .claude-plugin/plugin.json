@@ -1,6 +1,6 @@
 {
   "name": "usage-dash",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "description": "输入框上方的 AI 订阅额度仪表盘：Claude / Codex / Agnes / DeepSeek / 任意 JSON 接口，数据源可配置增删",
   "author": {
     "name": "chinbor",

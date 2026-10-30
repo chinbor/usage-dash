@@ -9,6 +9,7 @@
 
 - **概览**（默认折叠）：一行，只说需要注意的：「▲ 2 项告警」、每条告警的平台 · 窗口 · 剩余（百分比或余额），正常的平台叠成小图标。告警多时显示 `+N`。
 - **详情**（点「详情 ▾」）：每个平台一行，环形仪表显示最紧的窗口，每个时间窗口一格（剩余百分比、进度条、次数、重置倒计时）。绿色充足、黄色偏紧、红色告急。平台多时详情分页显示，用「收起」左边的「‹ 1/2 ›」翻页；横条不会超出位置、不和对话滚动抢滚轮，告警栏始终在顶部。
+- 新会话一打开就先显示上次的读数（标注多久前），各数据源读到一个换一个；某个平台卡住不会挡住其他平台，最多等 20 秒，读取失败时保留上次读数并注明。
 - 额度或余额低于阈值时弹一次提示；`display: status` 时状态栏只显示告警。
 - 桌面版（Code 标签页）用 SVG 绘制，带各平台图标；终端里是彩色字符进度条。
 
@@ -30,26 +31,39 @@ claude plugin install usage-dash --marketplace chinbor/usage-dash
 
 卸载：`claude plugin uninstall usage-dash`。
 
+## 设置面板
+
+输入 `/usage-dash`（不带参数）打开设置面板，改动直接写回配置文件，横条随即刷新：
+
+- **数据源**：每个数据源一张卡片，标明状态（充足 / 偏紧 / 告急 / 未配置 / 已停用）和当前额度；可以启用 / 停用、删除（删除前确认），用下拉框单独设提醒线。
+- **添加数据源**：每种类型一张卡片，写明显示什么、需要准备什么、已经加了几个，点「添加」按模板加入。
+- **显示与提醒**：每项设置附一句说明——显示位置 `band` / `status` / `off`（会写进插件选项并重载 usage-dash，也可以在 `/config` 里改），全局告急线、刷新间隔、未配置的数据源是否显示。
+
+手机端没有下拉框，下拉项会换成一排按钮。
+
+也可以直接跟 Claude 说，例如「把 Codex 停掉」「DeepSeek 余额低于 10 就提醒」：Claude 会调用 `usage_config` 工具（`get` / `set` 点路径 / `reset`），每次保存前完整校验，不合法就不写。路径里数据源按 id 指定，如 `sources.codex.enabled`。
+
 ## 增删订阅
 
-订阅会变，配置也跟着变。全部在 `~/.claude/usage-dash.json`（首次运行自动生成，默认只有 Claude 和 Codex），也可以用命令改：
+订阅会变，配置也跟着变。全部在 `~/.claude/usage-dash.json`（首次运行自动生成，默认只有 Claude 和 Codex），除了面板，也可以用命令改：
 
 | 命令 | 作用 |
 | --- | --- |
-| `/usage-dash` | 刷新并列出所有数据源（含未配置的） |
+| `/usage-dash` | 打开设置面板 |
+| `/usage-dash list` | 刷新并列出所有数据源（含未配置的） |
 | `/usage-dash types` | 能加哪些类型、各自需要什么 |
 | `/usage-dash add <类型> [id]` | 按模板添加一个数据源 |
 | `/usage-dash disable <id>` / `enable <id>` | 暂停 / 恢复（退订但可能回来） |
 | `/usage-dash remove <id>` | 删除 |
 | `/usage-dash path` | 配置文件位置 |
 
-没配好凭据的数据源（比如还没设环境变量）默认不在横条里出现，`/usage-dash` 会列出它缺什么。设 `"hideUnavailable": false` 可让它们也显示。
+没配好凭据的数据源（比如还没设环境变量）默认不在横条里出现，面板和 `/usage-dash list` 会列出它缺什么。设 `"hideUnavailable": false` 可让它们也显示。
 
 ## 内置类型
 
 | 类型 | 显示 | 需要 |
 | --- | --- | --- |
-| `claude` | 5 小时 / 7 天窗口；新会话先显示上次的读数（标注多久前），首次回复后更新 | Claude 订阅登录 |
+| `claude` | 5 小时 / 7 天窗口。读数来自会话最近一次回复（Claude Code 没有实时查询），任一会话回复后所有会话都显示最新的那份，超过 5 分钟标注多久前 | Claude 订阅登录 |
 | `codex` | 5 小时 / 每周窗口，实时（`codex app-server`），失败时读本地会话记录 | PATH 上有 `node` 和 `codex`，已登录 |
 | `agnes-plan` | Agnes 套餐：文本 5 小时 / 每周、图像 / 视频每日 | `AGNES_EMAIL` + `AGNES_PASSWORD`（自动登录，token 只在内存），或 `AGNES_PLATFORM_TOKEN` |
 | `deepseek` | 账户余额；低于 `warnBalance`（默认 5，设 0 关闭）告急，低于两倍偏紧 | `DEEPSEEK_API_KEY` |
@@ -95,7 +109,7 @@ claude plugin install usage-dash --marketplace chinbor/usage-dash
 
 - `warnPercent`：剩余低于它为告急（红），低于两倍为偏紧（黄）；每个数据源可单独设。
 - 每个数据源可设 `label`、`icon`（一两个字符或 emoji）、`color`。
-- 插件选项（`/plugin` 里设置）：`display` = `band`（默认，输入框上方，与别的横条叠放）/ `status`（状态栏只显示告警）/ `off`；`configPath` 改配置文件位置。
+- 插件选项（设置面板「显示」页或 `/config` 里设置）：`display` = `band`（默认，输入框上方，与别的横条叠放）/ `status`（状态栏只显示告警）/ `off`；`configPath` 改配置文件位置。
 
 ## 安全
 
@@ -105,7 +119,7 @@ claude plugin install usage-dash --marketplace chinbor/usage-dash
 
 ## English
 
-A usage band above the Claude Code prompt for your AI subscriptions. Collapsed it shows only alerts; expanded, one row per source with a gauge and a bar per quota window. Sources are configured in `~/.claude/usage-dash.json` or with `/usage-dash add|remove|enable|disable|types`; `http-json` maps any JSON endpoint without code. Keys are read from environment variables by name and never written to disk.
+A usage band above the Claude Code prompt for your AI subscriptions. Collapsed it shows only alerts; expanded, one row per source with a gauge and a bar per quota window. Sources are configured from the `/usage-dash` settings pane, by asking Claude (the `usage_config` tool), in `~/.claude/usage-dash.json`, or with `/usage-dash list|add|remove|enable|disable|types`; `http-json` maps any JSON endpoint without code. Keys are read from environment variables by name and never written to disk.
 
 ## 开发
 

@@ -34,6 +34,9 @@ export type DashItem = {
 
 export type DashSnapshot = { items: DashItem[]; updatedAt: number }
 
+/** The settings pane's pages. */
+export type SettingsTab = 'sources' | 'add' | 'display'
+
 declare module 'claude-code' {
   interface PluginState {
     'usage-dash': {
@@ -41,6 +44,12 @@ declare module 'claude-code' {
       isExpanded: boolean
       /** A source on the page of the expanded details shown: the pager turns it. */
       detailsFrom: number
+      /** The settings pane's page shown. */
+      tab: SettingsTab
+      /** Counts saves of the config file, so the pane redraws after one. */
+      configRev: number
+      /** The source whose 删除 was pressed once and waits for 确认删除. */
+      confirmRemove: string | null
     }
   }
 }

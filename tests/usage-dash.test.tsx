@@ -2,6 +2,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { parseCmdSet, parseRegQuery } from '../hooks/env'
+import { SOURCE_TIMEOUT_MS } from '../hooks/providers'
+import { setPath, validateConfig } from '../hooks/settings'
 import { PROVIDERS } from '../hooks/catalog'
 import {
   agnesPlanParts,
@@ -23,7 +25,7 @@ import {
 } from '../hooks/lib'
 
 // The kit's command.run takes the full input; the test needs only the name.
-const RUN = { command: 'usage-dash', args: '' } as never
+const RUN = { command: 'usage-dash', args: 'list' } as never
 const NOW = Date.parse('2026-10-29T08:00:00Z')
 
 const BAND = {
@@ -95,6 +97,14 @@ type EngineOpts = {
   noReading?: boolean
   /** What `$.store` holds: read and written in place, so a test sees the writes. */
   store?: Record<string, unknown>
+  /** The windows the session holds, changed in place by the test; absent, the usual pair. */
+  limits?: { kind: string; percentUsed: number; resetsAt?: string }[]
+  /** Codex answers only once this settles. */
+  codexWait?: Promise<void>
+  /** What `$.config.set` set the display row to, in order. */
+  displays?: string[]
+  /** The panes `$.ui.open` opened, by id. */
+  opened?: string[]
 }
 
 /** Stands for the engine on Windows: usage, codex helper, Agnes plan, the config file, `set NAME`. */
@@ -105,7 +115,7 @@ function engine(on: On, opts: EngineOpts = {}) {
     ...opts.vars,
   }
   let file: string | undefined = opts.config === null ? undefined : (opts.config ?? THREE)
-  mock.clock(on, { now: NOW })
+  const clock = mock.clock(on, { now: NOW })
   mock.env(on, { USERPROFILE: 'C:\Users\tester', OS: 'Windows_NT' })
   const store = opts.store ?? {}
   on('store.get', (_, e) => ({ value: store[e.key] }))
@@ -114,6 +124,20 @@ function engine(on: On, opts: EngineOpts = {}) {
     return { value: undefined }
   })
   on('command.register', () => ({ value: { command: 'usage-dash' } }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__usage-dash__${e.name}` } }))
+  on('ui.open', (_, e) => {
+    opts.opened?.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('config.list', () => ({
+    value: [
+      { key: 'usage-dash.display', label: '显示位置', kind: 'choice', value: 'band', options: ['band', 'status', 'off'], provider: { plugin: 'usage-dash', tier: 'user' }, isLocked: false },
+    ] as never,
+  }))
+  on('config.set', (_, e) => {
+    opts.displays?.push(String(e.value))
+    return { value: e.value }
+  })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('fs.read', () => {
     if (file !== undefined) return { value: file }
@@ -128,13 +152,14 @@ function engine(on: On, opts: EngineOpts = {}) {
     value: {
       startedAt: 0,
       context: {},
-      rateLimits: opts.noReading ? [] : [
+      rateLimits: opts.noReading ? [] : opts.limits ? opts.limits.slice() : [
         { kind: 'five_hour', percentUsed: 18, resetsAt: new Date(NOW + 2 * 3600e3).toISOString() },
         { kind: 'seven_day', percentUsed: 36 },
       ],
     } as never,
   }))
-  on('process.run', (_, e) => {
+  on('process.run', async (_, e) => {
+    if (e.argv[0] === 'node' && opts.codexWait) await opts.codexWait
     if (e.argv[0] === 'node') return { value: { exitCode: 0, stdout: `${opts.codexOut ?? CODEX}\n`, stderr: '' } as never }
     if (e.argv[0] === 'cmd') {
       const name = e.argv[4] ?? ''
@@ -161,6 +186,8 @@ function engine(on: On, opts: EngineOpts = {}) {
     }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(PLAN) } as never }
   })
+  on('turn.complete', () => ({ text: '' }))
+  return clock
 }
 
 test('the command lists all three sources', async ($, on) => {
@@ -624,4 +651,243 @@ test('http-json helpers', async () => {
     limit: undefined,
     resetsAt: Date.parse('2026-10-30T00:00:00Z'),
   })
+})
+
+const PANE = {
+  plugin: 'usage-dash',
+  component: 'Pane',
+  requestId: 'usage-dash',
+  props: { title: 'usage-dash', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
+} as const
+
+test('the bare command opens the settings pane; list still lists', async ($, on) => {
+  const opened: string[] = []
+  engine(on, { agnesKey: TOKEN, opened })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect((await $.command.run({ command: 'usage-dash', args: '' } as never)).text).toContain('设置面板已打开')
+  expect(opened).toEqual(['usage-dash'])
+  expect((await $.command.run(RUN)).text).toContain('Codex 5h 100%')
+})
+
+test('the pane draws on desktop and mobile: Select on the desktop, buttons on the phone', async ($, on) => {
+  engine(on, { agnesKey: TOKEN })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run(RUN)
+
+  for (const surface of ['desktop', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    // Sources: a row each, with its reading and its buttons.
+    expect((await ui.find({ type: 'Text', text: /周 15%/ }))?.text).toContain('5h 100%')
+    expect(await ui.find({ type: 'Button', key: 'toggle-codex' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'remove-agnes' })).toBeDefined()
+    // Each card says in a word how the source stands.
+    expect(await ui.find({ type: 'Text', text: '▲ 告急' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '● 充足' })).toBeDefined()
+    if (surface === 'desktop') expect((await ui.find({ type: 'Select', key: 'warn-codex' }))?.props.value).toBe('-')
+    else {
+      expect(await ui.find({ type: 'Select' })).toBeUndefined()
+      expect(await ui.find({ type: 'Button', key: 'warn-codex-30' })).toBeDefined()
+    }
+    // Add: every type with a button.
+    await ui.press({ key: 'tab-add' })
+    expect((await ui.find({ type: 'Button', key: 'add-http-json' }))?.props.label).toBe('添加')
+    expect((await ui.find({ type: 'Button', key: 'add-codex' }))?.props.label).toBe('再加一个')
+    expect(await ui.find({ type: 'Text', text: '✓ 已添加 1 个' })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /DEEPSEEK_API_KEY/ }))?.text).toContain('需要')
+    // Display: band / status / off.
+    await ui.press({ key: 'tab-display' })
+    if (surface === 'desktop') expect((await ui.find({ type: 'Select', key: 'display' }))?.props.value).toBe('band')
+    else expect((await ui.find({ type: 'Button', key: 'display-band' }))?.props.variant).toBe('primary')
+    await ui.press({ key: 'tab-sources' })
+    await ui.unmount()
+  }
+})
+
+test('in the pane, disabling a source writes it back and the band follows', async ($, on) => {
+  const writes: string[] = []
+  engine(on, { agnesKey: TOKEN, writes })
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>other band</Text>
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run(RUN)
+
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await pane.press({ key: 'toggle-codex' })
+  expect(JSON.parse(writes[0]!).sources[1]).toEqual({ id: 'codex', type: 'codex', enabled: false })
+  expect((await pane.find({ type: 'Button', key: 'toggle-codex' }))?.props.label).toBe('启用')
+  expect((await pane.find({ type: 'Text', text: '已停用' }))?.text).toBe('已停用')
+
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await band.find({ type: 'Button', key: 'toggle' }))?.text).not.toContain('Codex')
+  await band.unmount()
+
+  await pane.press({ key: 'toggle-codex' })
+  expect(JSON.parse(writes[0]!).sources[1]).toEqual({ id: 'codex', type: 'codex' })
+  const back = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await back.find({ type: 'Button', key: 'toggle' }))?.text).toContain('Codex')
+  await back.unmount()
+
+  // Removing asks once more, and can be called off.
+  await pane.press({ key: 'remove-agnes' })
+  expect((await pane.find({ type: 'Text', text: /确定删除“Agnes”/ }))?.text).toContain('移除')
+  await pane.press({ key: 'cancel-remove-agnes' })
+  expect(await pane.find({ type: 'Button', key: 'confirm-remove-agnes' })).toBeUndefined()
+  await pane.press({ key: 'remove-agnes' })
+  expect(JSON.parse(writes[0]!).sources).toHaveLength(3)
+  await pane.press({ key: 'confirm-remove-agnes' })
+  expect(JSON.parse(writes[0]!).sources.map((s: { id: string }) => s.id)).toEqual(['claude', 'codex'])
+  await pane.unmount()
+})
+
+test('in the pane, a threshold and the display are picked', async ($, on) => {
+  const writes: string[] = []
+  const displays: string[] = []
+  engine(on, { agnesKey: TOKEN, writes, displays })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run(RUN)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.select({ key: 'warn-codex', value: '30' })
+  expect(JSON.parse(writes[0]!).sources[1]).toEqual({ id: 'codex', type: 'codex', warnPercent: 30 })
+  await ui.select({ key: 'warn-codex', value: '-' })
+  expect(JSON.parse(writes[0]!).sources[1]).toEqual({ id: 'codex', type: 'codex' })
+  await ui.press({ key: 'tab-display' })
+  await ui.select({ key: 'display', value: 'status' })
+  expect(displays).toEqual(['status'])
+  await ui.unmount()
+})
+
+test('usage_config refuses what does not validate and writes nothing', async ($, on) => {
+  const writes: string[] = []
+  engine(on, { agnesKey: TOKEN, writes })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run(RUN)
+  writes.length = 0
+  const call = (input: object) => $.tool.call({ tool: 'mcp__usage-dash__usage_config', ...input } as never).then(r => String(r.result))
+
+  expect(await call({ action: 'set', path: 'warnPercent', value: 150 })).toContain('warnPercent 要在 0–100 之间')
+  expect(await call({ action: 'set', path: 'refreshSeconds', value: 5 })).toContain('没改')
+  expect(await call({ action: 'set', path: 'sources.codex.type', value: 'gemini' })).toContain('type 只能是')
+  expect(await call({ action: 'set', path: 'sources.-', value: { id: 'codex', type: 'codex' } })).toContain('id 重复')
+  expect(await call({ action: 'set', path: 'sources.agnes.keyEnv', value: 'sk-abcdef0123456789abcdef' })).toContain('不是 key 本身')
+  expect(await call({ action: 'set', path: 'sources.nope.enabled', value: false })).toContain('没有 id 为 nope')
+  expect(await call({ action: 'set', path: 'display', value: 'popup' })).toContain('只能是')
+  expect(writes).toEqual([])
+
+  expect(await call({ action: 'set', path: 'sources.codex.enabled', value: false })).toContain('已保存')
+  expect(JSON.parse(writes[0]!).sources[1]).toEqual({ id: 'codex', type: 'codex', enabled: false })
+  expect(await call({ action: 'set', path: 'sources.agnes', remove: true })).toContain('已保存')
+  expect(JSON.parse(writes[0]!).sources.map((s: { id: string }) => s.id)).toEqual(['claude', 'codex'])
+  expect(await call({ action: 'get' })).toContain('"enabled": false')
+})
+
+test('helpers: validateConfig and setPath', async () => {
+  expect(validateConfig({ sources: [] })).toEqual([])
+  expect(validateConfig(parseConfig(undefined).config)).toEqual([])
+  expect(validateConfig({ sources: [{ id: 'r', type: 'openai-billing' }] })).toEqual(['sources[0]（r） 是 openai-billing，要写 baseUrl'])
+  expect(validateConfig([])).toEqual(['配置要是一个 JSON 对象'])
+  const raw = { sources: [{ id: 'a', type: 'claude' }] as Record<string, unknown>[] }
+  setPath(raw, 'sources.a.label', 'A')
+  setPath(raw, 'sources.-', { id: 'b', type: 'codex' })
+  setPath(raw, 'sources.0', undefined)
+  expect(raw.sources).toEqual([{ id: 'b', type: 'codex' }])
+})
+
+const answer = { reason: 'answer', answer: '好', durationMs: 1, isAborted: false, turnId: 't1' } as never
+
+test('polls do not freshen the Claude reading: it is dated by the reply that brought it', async ($, on) => {
+  const store: Record<string, unknown> = {}
+  const limits = [{ kind: 'five_hour', percentUsed: 18 }]
+  const clock = engine(on, { agnesKey: TOKEN, store, limits })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect((await $.command.run(RUN)).text).toContain('Claude 5h 82%\n')
+
+  // Twenty minutes idle: the timer polls, the reading stays as old as it is.
+  await clock.advance(20 * 60e3)
+  expect((await $.command.run(RUN)).text).toContain('Claude 5h 82% (20m前的读数)')
+  expect((store.claudeReading as { at: number }).at).toBe(NOW)
+
+  // A reply, even with the windows unmoved, makes it current.
+  await $.turn.complete(answer)
+  expect((await $.command.run(RUN)).text).toContain('Claude 5h 82%\n')
+  expect((store.claudeReading as { at: number }).at).toBe(NOW + 20 * 60e3)
+
+  // A moved window is a new reading.
+  await clock.advance(10 * 60e3)
+  limits[0]!.percentUsed = 40
+  expect((await $.command.run(RUN)).text).toContain('Claude 5h 60%\n')
+  expect((store.claudeReading as { at: number }).at).toBe(NOW + 30 * 60e3)
+})
+
+test('a newer reading from another session wins over this one, and an older one never overwrites it', async ($, on) => {
+  const store: Record<string, unknown> = {}
+  const clock = engine(on, { agnesKey: TOKEN, store, limits: [{ kind: 'five_hour', percentUsed: 18 }] })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run(RUN)
+
+  await clock.advance(10 * 60e3)
+  // Another session replied just now with more used.
+  store.claudeReading = { parts: [{ name: '5h', remaining: 50 }], at: NOW + 10 * 60e3 }
+  const { text } = await $.command.run(RUN)
+  expect(text).toContain('Claude 5h 50%\n')
+  expect((store.claudeReading as { parts: { remaining: number }[] }).parts[0]!.remaining).toBe(50)
+})
+
+/** Draws a plain Box beneath the band, as the engine would. */
+const beneath = (on: On) =>
+  on('ui.render', ($, e) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  })
+
+test('a stuck source holds back only itself, and gives up after its timeout', async ($, on) => {
+  let release!: () => void
+  const clock = engine(on, { agnesKey: TOKEN, codexWait: new Promise<void>(r => (release = r)) })
+  beneath(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const listing = $.command.run(RUN)
+  await clock.advance(1)
+
+  // Codex has not answered: the band is there with the others all the same.
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const line = (await ui.find({ type: 'Button', key: 'toggle' }))?.text
+  expect(line).toContain('Agnes')
+  expect(line).toContain('Claude')
+  expect(line).not.toContain('Codex')
+  await ui.unmount()
+
+  await clock.advance(SOURCE_TIMEOUT_MS)
+  expect((await listing).text).toContain('Codex 读取超时，下一轮再试')
+  release()
+})
+
+test('a new session starts from the last snapshot, dated, and keeps a reading when a source then fails', async ($, on) => {
+  let release!: () => void
+  const lastSnapshot = {
+    items: [{ id: 'codex', type: 'codex', label: 'Codex', parts: [{ name: '周', remaining: 40 }], warnPercent: 20 }],
+    updatedAt: NOW - 2 * 3600e3,
+  }
+  const store: Record<string, unknown> = { lastSnapshot }
+  const clock = engine(on, { agnesKey: TOKEN, store, codexWait: new Promise<void>(r => (release = r)) })
+  beneath(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const listing = $.command.run(RUN)
+  await clock.advance(1)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await ui.find({ type: 'Button', key: 'toggle' }))?.text).toContain('Codex')
+  await ui.press({ key: 'toggle' })
+  expect((await ui.find({ type: 'Text', text: /2h前的读数/ }))?.text).toContain('2h前的读数')
+  await ui.press({ key: 'toggle' })
+  await ui.unmount()
+
+  // Codex times out: the last reading stays, saying so.
+  await clock.advance(SOURCE_TIMEOUT_MS)
+  expect((await listing).text).toContain('Codex 周 40% (读取超时，下一轮再试，显示上次读数)')
+  // The full round is kept for the next session.
+  expect((store.lastSnapshot as { items: { id: string }[] }).items.map(i => i.id)).toEqual(['claude', 'codex', 'agnes'])
+  release()
 })

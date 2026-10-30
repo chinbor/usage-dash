@@ -22,6 +22,8 @@ type $ = EngineInterface
 export type TokenCache = {
   tokens: Map<string, string>
   logins: Map<string, Promise<{ token?: string; error?: string }>>
+  /** This session's Claude reading: the windows as last seen, and when a reply last brought them. */
+  claude: { key?: string; at: number }
 }
 
 /** Not set up on this machine: hidden from the band while hideUnavailable is on. */
@@ -35,29 +37,40 @@ async function getJson($: $, url: string, key: string) {
 
 type ClaudeReading = { parts: DashPart[]; at: number }
 
+/** A reading younger than this is shown undated. */
+export const CLAUDE_FRESH_MS = 5 * 60_000
+
 /**
- * The engine has a reading only after a session's first reply, so the last one
- * is kept in `$.store` (shared by all sessions) and shown, dated, until then.
+ * The engine knows the windows only as the last reply of this session reported
+ * them: there is no live query. So each reading is dated by the reply that
+ * brought it (`cache.claude.at`, moved on by a new reading or a finished turn),
+ * never by the poll that read it again, and kept in `$.store`, shared by all
+ * sessions, when it is the newest; every session shows the newest, dated once
+ * it is a few minutes old.
  */
-async function fetchClaude($: $, base: DashItem): Promise<DashItem> {
+async function fetchClaude($: $, base: DashItem, cache: TokenCache): Promise<DashItem> {
+  const now = await $.clock.now()
   const { rateLimits } = await $.session.usage()
   const parts = claudeParts(rateLimits)
+  const stored = (await $.store.get('claudeReading')) as ClaudeReading | undefined
+  let own: ClaudeReading | undefined
   if (parts.length) {
-    await $.store.set('claudeReading', { parts, at: await $.clock.now() } satisfies ClaudeReading)
-    return { ...base, parts }
+    const key = JSON.stringify(rateLimits)
+    if (key !== cache.claude.key) cache.claude = { key, at: now }
+    own = { parts, at: cache.claude.at }
+    if (!stored?.parts?.length || stored.at < own.at) await $.store.set('claudeReading', own)
   }
-  const last = (await $.store.get('claudeReading')) as ClaudeReading | undefined
-  if (!last?.parts?.length) return unavailable(base, '首次回复后显示')
-  const now = await $.clock.now()
-  const age = now - last.at
-  return { ...base, parts: carriedParts(last.parts, now), note: age < 60000 ? '刚才的读数' : `${fmtDuration(age)}前的读数` }
+  const best = stored?.parts?.length && (!own || stored.at > own.at) ? stored : own
+  if (!best) return unavailable(base, '首次回复后显示')
+  const age = now - best.at
+  return { ...base, parts: carriedParts(best.parts, now), note: age < CLAUDE_FRESH_MS ? undefined : `${fmtDuration(age)}前的读数` }
 }
 
 async function fetchCodex($: $, s: SourceConfig, base: DashItem): Promise<DashItem> {
   const script = `${$.plugin.root.replace(/\\/g, '/')}/scripts/codex-limits.mjs`
   let stdout: string
   try {
-    stdout = (await $.process.run(['node', script, s.bin ?? 'codex'], { timeoutMs: 25000 })).stdout
+    stdout = (await $.process.run(['node', script, s.bin ?? 'codex'], { timeoutMs: SOURCE_TIMEOUT_MS - 2000 })).stdout
   } catch {
     return unavailable(base, '需要 node')
   }
@@ -171,7 +184,10 @@ async function fetchHttpJson($: $, s: SourceConfig, base: DashItem): Promise<Das
   return parts.length ? { ...base, parts } : { ...base, error: '配置里没有 windows 或 values' }
 }
 
-/** One source's reading, never a rejection: a failure is the item's `error`. */
+/** How long a source may take before the band gives up on it until the next round. */
+export const SOURCE_TIMEOUT_MS = 20_000
+
+/** One source's reading, never a rejection: a failure, or no answer in time, is the item's `error`. */
 export async function fetchSource($: $, s: SourceConfig, warnPercent: number, cache: TokenCache): Promise<DashItem> {
   const base: DashItem = {
     id: s.id,
@@ -182,24 +198,36 @@ export async function fetchSource($: $, s: SourceConfig, warnPercent: number, ca
     parts: [],
     warnPercent: s.warnPercent ?? warnPercent,
   }
-  try {
-    switch (s.type) {
-      case 'claude':
-        return await fetchClaude($, base)
-      case 'codex':
-        return await fetchCodex($, s, base)
-      case 'agnes-plan':
-        return await fetchAgnesPlan($, s, base, cache)
-      case 'openai-billing':
-        return await fetchOpenAiBilling($, s, base)
-      case 'deepseek':
-        return await fetchDeepseek($, s, base)
-      case 'http-json':
-        return await fetchHttpJson($, s, base)
-      default:
-        return { ...base, error: `未知类型 ${s.type}（/usage-dash types 查看可用类型）` }
+  const read = async (): Promise<DashItem> => {
+    try {
+      switch (s.type) {
+        case 'claude':
+          return await fetchClaude($, base, cache)
+        case 'codex':
+          return await fetchCodex($, s, base)
+        case 'agnes-plan':
+          return await fetchAgnesPlan($, s, base, cache)
+        case 'openai-billing':
+          return await fetchOpenAiBilling($, s, base)
+        case 'deepseek':
+          return await fetchDeepseek($, s, base)
+        case 'http-json':
+          return await fetchHttpJson($, s, base)
+        default:
+          return { ...base, error: `未知类型 ${s.type}（/usage-dash types 查看可用类型）` }
+      }
+    } catch (err) {
+      return { ...base, error: `出错：${(err as Error).message ?? String(err)}`.slice(0, 80) }
     }
-  } catch (err) {
-    return { ...base, error: `出错：${(err as Error).message ?? String(err)}`.slice(0, 80) }
+  }
+  // A request that hangs (no network, a stuck proxy) would otherwise hold its source back for good.
+  let timer: { cancel: () => void } | undefined
+  const late = new Promise<DashItem>(resolve => {
+    timer = $.clock.after(SOURCE_TIMEOUT_MS, () => resolve({ ...base, error: '读取超时，下一轮再试' }))
+  })
+  try {
+    return await Promise.race([read(), late])
+  } finally {
+    timer?.cancel()
   }
 }

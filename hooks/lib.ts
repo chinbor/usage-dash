@@ -566,7 +566,7 @@ export function fitText(s: string, maxW: number, size: number, bold = false): st
  */
 export function svgAlertStrip(items: DashItem[], now: number, width: number) {
   const H = 36
-  const W = Math.max(320, Math.round(width))
+  const W = Math.max(100, Math.round(width))
   const out: string[] = []
   const tile = (x: number, item: DashItem, glyph: string, tint: string, ring = false) =>
     `${ring ? `<rect x="${x - 1.5}" y="7.5" width="21" height="21" rx="6.5" class="bgfill"/>` : ''}<rect x="${x}" y="9" width="18" height="18" rx="5" fill="${tint}"/>${tileMark(x, 9, item, glyph, ['g', 's'])}`
@@ -615,6 +615,8 @@ export function svgAlertStrip(items: DashItem[], now: number, width: number) {
     24 + Math.min(150, textWidth(`${f.item.label} · ${f.part.name}`, 12)) + 6 + textWidth(partFigure(f.part), 14, true) + (found.length > 1 ? 34 : 0)
   let { rx, right } = layoutRight(STACK)
   if (found[0] && sw + 14 + firstChip(found[0]) > rx - 4) ({ rx, right } = layoutRight(1))
+  // Narrower still, the right end goes before it overlaps the status: the details list those sources.
+  if (rx - 4 < sw + 14 + (found.length ? 34 : 0)) ({ rx, right } = { rx: W, right: [] })
 
   // The middle: the alerts, as many as fit before the right end; the first
   // one's name cut to the room there is rather than left out.
@@ -636,7 +638,7 @@ export function svgAlertStrip(items: DashItem[], now: number, width: number) {
     x += w + 18
     shown++
   }
-  if (shown < found.length) {
+  if (shown < found.length && x + 30 <= W) {
     out.push(`<rect x="${x}" y="9" width="30" height="18" rx="9" class="more"/><text x="${x + 15}" y="22" text-anchor="middle" class="d">+${found.length - shown}</text>`)
   }
   out.push(...right)

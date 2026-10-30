@@ -36,7 +36,7 @@ export const PROVIDERS: Record<string, ProviderInfo> = {
     title: 'Claude',
     icon: '✳',
     color: '#d97757',
-    summary: 'Claude 订阅的 5 小时 / 7 天窗口，新会话先显示上次的读数，首次回复后更新',
+    summary: 'Claude 订阅的 5 小时 / 7 天窗口，读数随回复更新，多个会话共用最新的一份，超过 5 分钟标注多久前',
     template: {},
     needs: '用 Claude 订阅（Pro / Max）账号登录 Claude Code；API key 登录没有这项数据',
   },
